@@ -9,6 +9,9 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Formatting.Compact;
+using Microsoft.Extensions.Configuration.Json;
 
 namespace ClipboardHistoryApp
 {
@@ -21,7 +24,7 @@ namespace ClipboardHistoryApp
 
         private static IConfiguration _configuration;
         internal static IntPtr _windowHandle;
-        private static ILogger<Program> _logger;
+        internal static ILogger<Program> _logger;
 
         [DllImport("user32.dll")]
         public static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -32,12 +35,18 @@ namespace ClipboardHistoryApp
         [STAThread]
         static void Main()
         {
+            // Configure Serilog
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .WriteTo.Console()
+                .WriteTo.File(new CompactJsonFormatter(), Path.Combine(BaseDirectory, "logs", "log.json"), rollingInterval: RollingInterval.Day)
+                .CreateLogger();
+
             var loggerFactory = LoggerFactory.Create(builder =>
             {
-                builder
-                    .AddConsole()
-                    .AddDebug();
+                builder.AddSerilog(dispose: true);
             });
+
             _logger = loggerFactory.CreateLogger<Program>();
 
             try
@@ -80,6 +89,11 @@ namespace ClipboardHistoryApp
             if (!Directory.Exists(BaseDirectory))
             {
                 Directory.CreateDirectory(BaseDirectory);
+            }
+
+            if (!Directory.Exists(Path.Combine(BaseDirectory, "logs")))
+            {
+                Directory.CreateDirectory(Path.Combine(BaseDirectory, "logs"));
             }
 
             CreateDatabase();
@@ -130,11 +144,13 @@ namespace ClipboardHistoryApp
 
         private static void LoadConfiguration()
         {
-            var builder = new ConfigurationBuilder()
-                .SetBasePath(BaseDirectory)
-                .AddJsonFile(ConfigFile, optional: true, reloadOnChange: true);
-
-            _configuration = builder.Build();
+            var _configPath = ConfigFile;
+            if (!File.Exists(_configPath))
+            {
+                 _configuration = new ConfigurationBuilder()
+                    .AddJsonFile(_configPath, optional: true, reloadOnChange: true)
+                    .Build();
+            }
         }
 
         private static void ViewHistoryMenuItem_Click(object sender, EventArgs e)
@@ -279,21 +295,64 @@ namespace ClipboardHistoryApp
             base.Dispose(disposing);
         }
     }
+    public class DarkForm : Form
+    {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                const int CS_DROPSHADOW = 0x20000;
+                CreateParams cp = base.CreateParams;
+                cp.ClassStyle |= CS_DROPSHADOW;
+                return cp;
+            }
+        }
 
-    public class HistoryForm : Form
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+
+            // Custom title bar color
+            Color titleBarColor = Color.FromArgb(45, 45, 45);
+
+            // Paint the title bar
+            Rectangle titleBarRect = new Rectangle(0, 0, Width, 30);
+            using (SolidBrush brush = new SolidBrush(titleBarColor))
+            {
+                e.Graphics.FillRectangle(brush, titleBarRect);
+            }
+
+            // Custom title text
+            string title = Text;
+            using (Font titleFont = new Font("Segoe UI", 10))
+            using (SolidBrush titleBrush = new SolidBrush(Color.White))
+            {
+                StringFormat sf = new StringFormat
+                {
+                    Alignment = StringAlignment.Near,
+                    LineAlignment = StringAlignment.Center
+                };
+                e.Graphics.DrawString(title, titleFont, titleBrush, titleBarRect, sf);
+            }
+        }
+    }
+
+    public class HistoryForm : DarkForm
     {
         public HistoryForm()
         {
             Text = "Clipboard History";
             Width = 800;
             Height = 600;
-            BackColor = SystemColors.Window;
+            BackColor = Color.FromArgb(60, 60, 60);
+            StartPosition = FormStartPosition.CenterScreen;
 
             FlowLayoutPanel panel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true,
-                BackColor = SystemColors.Window
+                BackColor = Color.FromArgb(60, 60, 60),
+                Padding = new Padding(10)
             };
 
             LoadHistory(panel);
@@ -315,10 +374,9 @@ namespace ClipboardHistoryApp
                         Panel itemPanel = new Panel
                         {
                             Width = 760,
-                            Height = 100,
-                            BorderStyle = BorderStyle.FixedSingle,
+                            Height = 120,
                             Padding = new Padding(10),
-                            BackColor = SystemColors.ControlLightLight
+                            BackColor = Color.FromArgb(70, 70, 70)
                         };
 
                         if (!string.IsNullOrEmpty(reader["ImagePath"].ToString()))
@@ -349,9 +407,12 @@ namespace ClipboardHistoryApp
                         {
                             Text = reader["Content"].ToString(),
                             Width = 600,
-                            Height = 60,
-                            AutoEllipsis = true,
-                            BackColor = SystemColors.ControlLightLight
+                            Height = 80,
+                            AutoSize = true,
+                            ForeColor = Color.White,
+                            BackColor = Color.Transparent,
+                            Padding = new Padding(5),
+                            Font = new Font("Consolas", 10)
                         };
 
                         Button deleteButton = new Button
@@ -375,7 +436,8 @@ namespace ClipboardHistoryApp
                         {
                             Text = reader["Timestamp"].ToString(),
                             Dock = DockStyle.Bottom,
-                            BackColor = SystemColors.ControlLightLight
+                            ForeColor = Color.White,
+                            BackColor = Color.Transparent
                         };
 
                         itemPanel.Controls.Add(contentLabel);
@@ -383,6 +445,7 @@ namespace ClipboardHistoryApp
                         itemPanel.Controls.Add(timestampLabel);
 
                         panel.Controls.Add(itemPanel);
+                        panel.Controls.Add(new Panel { Height = 1, Dock = DockStyle.Bottom, BackColor = Color.Gray });
                     }
                 }
             }
