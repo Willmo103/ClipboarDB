@@ -11,20 +11,23 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Serilog;
 using Serilog.Formatting.Compact;
-using Microsoft.Extensions.Configuration.Json;
+using ClipboardHistoryApp.Forms;
+using ClipboarDB.Forms;
 
 namespace ClipboardHistoryApp
 {
     class Program
     {
-        private static readonly string BaseDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".macros", "ClipboardDB");
+        internal static readonly string BaseDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".macros", "ClipboardDB");
         internal static readonly string ConnectionString = $"Data Source={Path.Combine(BaseDirectory, "clipboard.db")};Version=3;";
         internal static readonly string ImagesDirectory = Path.Combine(BaseDirectory, "CopiedImages");
-        private static readonly string ConfigFile = Path.Combine(BaseDirectory, "config.json");
+        internal static readonly string ConfigFile = Path.Combine(BaseDirectory, "config.json");
 
-        private static IConfiguration _configuration;
+        internal static IConfiguration _configuration;
         internal static IntPtr _windowHandle;
         internal static ILogger<Program> _logger;
+        internal static HistoryForm historyForm;
+        internal const int WM_CLIPBOARDUPDATE = 0x031D;
 
         [DllImport("user32.dll")]
         public static extern bool AddClipboardFormatListener(IntPtr hwnd);
@@ -68,6 +71,7 @@ namespace ClipboardHistoryApp
                 trayIcon.Icon = SystemIcons.Information;
                 trayIcon.Text = "Clipboard History";
                 trayIcon.Visible = true;
+                trayIcon.DoubleClick += (sender, e) => ViewHistoryMenuItem_Click(sender, e);
 
                 ContextMenuStrip contextMenu = new ContextMenuStrip();
                 ToolStripMenuItem viewHistoryMenuItem = new ToolStripMenuItem("View History");
@@ -78,9 +82,16 @@ namespace ClipboardHistoryApp
                 contextMenu.Items.Add(exitMenuItem);
                 trayIcon.ContextMenuStrip = contextMenu;
 
-                Application.ApplicationExit += (sender, e) => RemoveClipboardFormatListener(_windowHandle);
+                using (var listenerForm = new ClipboardListenerForm())
+                {
+                    listenerForm.Show();
+                    _windowHandle = listenerForm.Handle;
+                    AddClipboardFormatListener(_windowHandle);
 
-                Application.Run();
+                    Application.ApplicationExit += (sender, e) => RemoveClipboardFormatListener(_windowHandle);
+
+                    Application.Run();
+                }
             }
         }
 
@@ -137,6 +148,28 @@ namespace ClipboardHistoryApp
             }
         }
 
+        public static void OnClipboardUpdate()
+        {
+            IDataObject data = Clipboard.GetDataObject();
+            if (data != null)
+            {
+                if (data.GetDataPresent(DataFormats.Text))
+                {
+                    string text = (string)data.GetData(DataFormats.Text);
+                    SaveClipboardText(text);
+                    // Notify the HistoryForm to refresh the history
+                    historyForm?.RefreshHistory();
+                }
+                else if (data.GetDataPresent(DataFormats.Bitmap))
+                {
+                    Bitmap bitmap = (Bitmap)data.GetData(DataFormats.Bitmap);
+                    SaveClipboardImage(bitmap);
+                    // Notify the HistoryForm to refresh the history
+                    historyForm?.RefreshHistory();
+                }
+            }
+        }
+
         private static void CreateImagesDirectory()
         {
             Directory.CreateDirectory(ImagesDirectory);
@@ -147,7 +180,7 @@ namespace ClipboardHistoryApp
             var _configPath = ConfigFile;
             if (!File.Exists(_configPath))
             {
-                 _configuration = new ConfigurationBuilder()
+                _configuration = new ConfigurationBuilder()
                     .AddJsonFile(_configPath, optional: true, reloadOnChange: true)
                     .Build();
             }
@@ -155,10 +188,11 @@ namespace ClipboardHistoryApp
 
         private static void ViewHistoryMenuItem_Click(object sender, EventArgs e)
         {
-            using (HistoryForm historyForm = new HistoryForm())
+            if (historyForm == null || historyForm.IsDisposed)
             {
-                historyForm.ShowDialog();
+                historyForm = new HistoryForm();
             }
+            historyForm.ShowDialog();
         }
 
         private static void ExitMenuItem_Click(object sender, EventArgs e)
@@ -201,6 +235,7 @@ namespace ClipboardHistoryApp
                         {
                             updateCommand.Parameters.AddWithValue("@Id", id);
                             updateCommand.ExecuteNonQuery();
+                            historyForm?.RefreshHistory();
                         }
                     }
                     else
@@ -212,6 +247,7 @@ namespace ClipboardHistoryApp
                             insertCommand.Parameters.AddWithValue("@ImagePath", imagePath);
                             insertCommand.Parameters.AddWithValue("@Hash", hash);
                             insertCommand.ExecuteNonQuery();
+                            historyForm?.RefreshHistory();
                         }
                     }
                 }
@@ -237,217 +273,6 @@ namespace ClipboardHistoryApp
             using (Image image = Image.FromFile(imagePath))
             {
                 return image.GetThumbnailImage(width, height, () => false, IntPtr.Zero);
-            }
-        }
-    }
-
-    public class ClipboardNotificationForm : Form
-    {
-        private const int WM_CLIPBOARDUPDATE = 0x031D;
-
-        public ClipboardNotificationForm()
-        {
-            Program._windowHandle = this.Handle;
-            Program.AddClipboardFormatListener(this.Handle);
-            this.FormClosing += new FormClosingEventHandler(ClipboardNotificationForm_FormClosing);
-            this.Shown += new EventHandler(ClipboardNotificationForm_Shown);
-        }
-
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == WM_CLIPBOARDUPDATE)
-            {
-                IDataObject data = Clipboard.GetDataObject();
-                if (data != null)
-                {
-                    if (data.GetDataPresent(DataFormats.Text))
-                    {
-                        string text = (string)data.GetData(DataFormats.Text);
-                        Program.SaveClipboardText(text);
-                    }
-                    else if (data.GetDataPresent(DataFormats.Bitmap))
-                    {
-                        Bitmap bitmap = (Bitmap)data.GetData(DataFormats.Bitmap);
-                        Program.SaveClipboardImage(bitmap);
-                    }
-                }
-            }
-            base.WndProc(ref m);
-        }
-
-        private void ClipboardNotificationForm_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            e.Cancel = true;
-            this.Hide();
-        }
-
-        private void ClipboardNotificationForm_Shown(object sender, EventArgs e)
-        {
-            this.Hide();
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                Program.RemoveClipboardFormatListener(this.Handle);
-            }
-            base.Dispose(disposing);
-        }
-    }
-    public class DarkForm : Form
-    {
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                const int CS_DROPSHADOW = 0x20000;
-                CreateParams cp = base.CreateParams;
-                cp.ClassStyle |= CS_DROPSHADOW;
-                return cp;
-            }
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-
-            // Custom title bar color
-            Color titleBarColor = Color.FromArgb(45, 45, 45);
-
-            // Paint the title bar
-            Rectangle titleBarRect = new Rectangle(0, 0, Width, 30);
-            using (SolidBrush brush = new SolidBrush(titleBarColor))
-            {
-                e.Graphics.FillRectangle(brush, titleBarRect);
-            }
-
-            // Custom title text
-            string title = Text;
-            using (Font titleFont = new Font("Segoe UI", 10))
-            using (SolidBrush titleBrush = new SolidBrush(Color.White))
-            {
-                StringFormat sf = new StringFormat
-                {
-                    Alignment = StringAlignment.Near,
-                    LineAlignment = StringAlignment.Center
-                };
-                e.Graphics.DrawString(title, titleFont, titleBrush, titleBarRect, sf);
-            }
-        }
-    }
-
-    public class HistoryForm : DarkForm
-    {
-        public HistoryForm()
-        {
-            Text = "Clipboard History";
-            Width = 800;
-            Height = 600;
-            BackColor = Color.FromArgb(60, 60, 60);
-            StartPosition = FormStartPosition.CenterScreen;
-
-            FlowLayoutPanel panel = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                AutoScroll = true,
-                BackColor = Color.FromArgb(60, 60, 60),
-                Padding = new Padding(10)
-            };
-
-            LoadHistory(panel);
-
-            Controls.Add(panel);
-        }
-
-        private void LoadHistory(FlowLayoutPanel panel)
-        {
-            using (SQLiteConnection connection = new SQLiteConnection(Program.ConnectionString))
-            {
-                connection.Open();
-                string sql = "SELECT Id, Content, ImagePath, Timestamp FROM ClipboardHistory ORDER BY Timestamp DESC";
-                using (SQLiteCommand command = new SQLiteCommand(sql, connection))
-                using (SQLiteDataReader reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        Panel itemPanel = new Panel
-                        {
-                            Width = 760,
-                            Height = 120,
-                            Padding = new Padding(10),
-                            BackColor = Color.FromArgb(70, 70, 70)
-                        };
-
-                        if (!string.IsNullOrEmpty(reader["ImagePath"].ToString()))
-                        {
-                            PictureBox pictureBox = new PictureBox
-                            {
-                                Image = Program.GetThumbnail(reader["ImagePath"].ToString(), 80, 80),
-                                SizeMode = PictureBoxSizeMode.Zoom,
-                                Width = 80,
-                                Height = 80,
-                                Cursor = Cursors.Hand
-                            };
-                            pictureBox.Click += (s, e) =>
-                            {
-                                try
-                                {
-                                    System.Diagnostics.Process.Start("explorer", reader["ImagePath"].ToString());
-                                }
-                                catch (Exception ex)
-                                {
-                                    Program._logger.LogError(ex, "An error occurred while opening the image.");
-                                }
-                            };
-                            itemPanel.Controls.Add(pictureBox);
-                        }
-
-                        Label contentLabel = new Label
-                        {
-                            Text = reader["Content"].ToString(),
-                            Width = 600,
-                            Height = 80,
-                            AutoSize = true,
-                            ForeColor = Color.White,
-                            BackColor = Color.Transparent,
-                            Padding = new Padding(5),
-                            Font = new Font("Consolas", 10)
-                        };
-
-                        Button deleteButton = new Button
-                        {
-                            Text = "Delete",
-                            Width = 80,
-                            Height = 30,
-                            BackColor = SystemColors.ControlLightLight
-                        };
-                        deleteButton.Click += (s, e) =>
-                        {
-                            using (SQLiteCommand deleteCommand = new SQLiteCommand("DELETE FROM ClipboardHistory WHERE Id = @Id", connection))
-                            {
-                                deleteCommand.Parameters.AddWithValue("@Id", reader["Id"]);
-                                deleteCommand.ExecuteNonQuery();
-                                panel.Controls.Remove(itemPanel);
-                            }
-                        };
-
-                        Label timestampLabel = new Label
-                        {
-                            Text = reader["Timestamp"].ToString(),
-                            Dock = DockStyle.Bottom,
-                            ForeColor = Color.White,
-                            BackColor = Color.Transparent
-                        };
-
-                        itemPanel.Controls.Add(contentLabel);
-                        itemPanel.Controls.Add(deleteButton);
-                        itemPanel.Controls.Add(timestampLabel);
-
-                        panel.Controls.Add(itemPanel);
-                        panel.Controls.Add(new Panel { Height = 1, Dock = DockStyle.Bottom, BackColor = Color.Gray });
-                    }
-                }
             }
         }
     }

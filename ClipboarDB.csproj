@@ -5,6 +5,12 @@
 		<UseWindowsForms>true</UseWindowsForms>
 		<LangVersion>10.0</LangVersion>
 	</PropertyGroup>
+	<ItemGroup>
+	  <Compile Remove="HistoryForm.cs" />
+	</ItemGroup>
+	<ItemGroup>
+	  <None Include="Forms\HistoryForm.cs" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
